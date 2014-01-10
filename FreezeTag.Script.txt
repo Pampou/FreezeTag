@@ -30,7 +30,7 @@
 #Const C_OffZoneDuration 45
 #Const UITickPeriod 200
 #Const C_NearDistance 1.5
-#Const C_Bots True
+#Const C_Bots False
 
 declare Boolean	G_OffZoneIsActivated;
 declare Boolean G_PlayerIsReady;
