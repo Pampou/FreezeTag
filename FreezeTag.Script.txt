@@ -1,15 +1,15 @@
-/********************************************************************************************
-*	Freezetag Game Mode																		*
-*	Author:		Lethan																	    *
-*	Contact:	lethanov@gmail.com														    *
-********************************************************************************************/
+/**
+ *	FreezeTag mode - PvP GameMode
+ *  Author : lethan
+ *  Contact : lethanov@gmail.com
+ */
 
-//#RequireContext CSmMode
+
 #Extends "Modes/ShootMania/ModeBase.Script.txt"
 
 #Const	CompatibleMapTypes	"FreezeTagArena"
-#Const	ScriptName	"FreezeTag.Script.txt"
-#Const	Description	_("TYPE: Free Mode - Team 5v5 max\nOBJECTIVE: Hit your opponents to score points and disarm them. If you touch physically a disarmed teammate, he will be back on the battlefield. The first team who disarm the entire opposite team win the round.\nIf you fall into OffZone, your team will get penalty : You will respawn but the game will think you are considered as disarmed player until Direct Elimination phase. When the time limit is reached, all disarmed players will be eliminated and the game will be on Direct Elimination mode (Tornado).\n\n\nOBJECTIF : Touchez vos adversaires pour les désarmer. Si vous touchez physiquement un allié désarmé, il reviendra sur le champ de bataille. La première équipe à désarmer l'équipe adverse remporte le round.\nSi vous tombez dans de l'OffZone, votre équipe aura une pénalité : Vous respawnerez mais le jeu vous considérera comme désarmé avant la phase d'élimination directe. Lorsque le temps limite est dépassé, tous les joueurs désarmés seront éliminés et le jeu passera en mode élimination directe (Tornade).")
+#Const	Version				"2016-02-25"
+#Const	ScriptName			"FreezeTag.Script.txt"
 
 #Include "MathLib" as MathLib
 #Include "TextLib" as TextLib
@@ -21,956 +21,803 @@
 #Include "Libs/Nadeo/ShootMania/SpawnScreen.Script.txt" as SpawnScreen
 #Include "Libs/Nadeo/ShootMania/ScoresTable.Script.txt" as ScoresTable
 
-#Setting S_TimeLimit 100 as _("Time Limit (in seconds)")
-#Setting S_ScoreLimit 6 as _("Score Limit")
-#Setting S_MaxScoreLimit 8 as _("Max Score Limit")
+// ---------------------------------- //
+// Settings
+// ---------------------------------- //
+
+#Setting S_TimeLimit	60 as _("Time limit")		///< Time limit on a map
+#Setting S_ScoreLimit	6	as _("Score limit")	///< Points limit on a map
+#Setting S_MaxScoreLimit	8	as _("Max Score limit")	///< Points limit on a map
+
+#Const Description _("TYPE: Free for all\nOBJECTIVE: Hit your opponents to score points. The first player to reach the points limit or the player with the highest score at the end of the time limit wins the map.")
 
 #Const C_OffZoneRadiusMax 160.
 #Const C_OffZoneRadiusMin 15.
-#Const C_OffZoneDuration 45
-#Const UITickPeriod 200
+#Const C_OffZoneDuration 20
 #Const C_NearDistance 1.5
-#Const C_Bots False
+#Const C_Bots			False	// FOR TEST ONLY, THEY ARE DUMB
+#Const UITickPeriod 200
 
-declare Boolean	G_OffZoneIsActivated;
-declare Boolean G_PlayerIsReady;
+// ---------------------------------- //
+// Globales variables
+// ---------------------------------- //
+declare Ident[]	_SpawnList;		///< Id of all the landmarks with a player spawn of the map
+declare Integer _Turn;
+declare Integer _LastWinnerClan;
 
-declare CSmPlayer[] G_PlayersList;
+declare CUILayer _SoundLayerFirst;
+declare CUILayer _ScoreLimitLayer;
+declare CUILayer _LayerTeams;
 
-declare CSmBlockSpawn G_WarmupSpawn;
-declare CSmBlockSpawn[] G_Spawns;
+declare Integer _LatestUITickScoreLimit;
+declare Integer _LatestUITickLayerTeams;
 
-declare Integer G_Clan1NbDisarm;
-declare Integer G_Clan2NbDisarm;
+declare Integer _Clan1NbDisarm;
+declare Integer _Clan2NbDisarm;
 
-declare Integer G_Clan1Penalty;
-declare Integer G_Clan2Penalty;
+declare Text[Ident] _PlayerManialinkLines;
 
-declare Text[Ident] PlayerManialinkLines;
+declare Text _GamePhase;
 
-declare Integer G_Turn;
-declare Integer G_Phase;
+declare CSmPlayer[] _PlayersRespawnOne;
+declare CSmPlayer[] _PlayersRespawnTwo;
 
-declare Integer LatestUITickScoreLimit;
-declare Integer LatestUITickLayerTeams;
+// ---------------------------------- //
+// Extend
+// ---------------------------------- //
 
-declare CUILayer ScoreLimit;
-declare CUILayer LayerTeams;
-declare CUILayer CustomSounds;
+***LogVersion***
+***
+MB_LogVersion(ScriptName, Version);
+MB_LogVersion(SM::GetScriptName(), SM::GetScriptVersion());
+MB_LogVersion(Score::GetScriptName(), Score::GetScriptVersion());
+MB_LogVersion(Message::GetScriptName(), Message::GetScriptVersion());
+MB_LogVersion(Interface::GetScriptName(), Interface::GetScriptVersion());
+MB_LogVersion(SpawnScreen::GetScriptName(), SpawnScreen::GetScriptVersion());
+***
 
-
+// ---------------------------------- //
+// Set rules
+// ---------------------------------- //
 ***Rules***
 ***
-declare ModeName = "Freezetag";
-SpawnScreen::CreateRules(ModeName, Description);
+declare ModeName = "FreezeTag";
+declare ModeRules = TextLib::Compose(_("$<%11. $>Hit your opponents to score points.\n$<%12. $>The first player to reach the points limit or the player with the highest score at the end of the time limit wins the map."), "$"^SpawnScreen::GetModeColor());
+SpawnScreen::ResetRulesSection();
+SpawnScreen::AddSubsection(_("Type"), _("Team vs Team"), 0.);
+SpawnScreen::AddSubsection(_("Objectives"), ModeRules, 20.);
+SpawnScreen::CreatePrettyRules(ModeName);
+ModeStatusMessage = _("TYPE: Team vs Team\nOBJECTIVE: Disarm opponents by hitting them twice.");
 ***
 
-***StartServer***
-***
-UseClans = True;
-UseAllies = True;
-DbgEnableNavMesh = True;
-***
-
+// ---------------------------------- //
+// Server start
+// ---------------------------------- //
 ***StartMap***
 ***
-PrepareMap();
+/*
+* Layers *
+*/
 
-G_Phase = 0;
-***
+//Sound
+_SoundLayerFirst = UIManager.UILayerCreate();
+UIManager.UIAll.UILayers.add(_SoundLayerFirst);
+_SoundLayerFirst.ManialinkPage = """
+""";
 
-***PlayLoop***
-***
-ShowScoreLimit();
-//Message loop
-Message::Loop();
+//Score limit
+_ScoreLimitLayer = UIManager.UILayerCreate();
+UIManager.UIAll.UILayers.add(_ScoreLimitLayer);
+_ScoreLimitLayer.ManialinkPage = """
+""";
 
-//Check players status
-CheckPlayersStatus();
+//Layer Teams
+_LayerTeams = UIManager.UILayerCreate();
+UIManager.UIAll.UILayers.add(_LayerTeams);
+_LayerTeams.ManialinkPage = """
+""";
 
-//Phases
+
+// ---------------------------------- //
+// Set mode options
+UseClans = True;
+UseAllies = True;
+ForceNavMapsComputation = True;
+
+// ---------------------------------- //
+// Create the rules
+---Rules---
+
+// ---------------------------------- //
+// Initialize UI
+SpawnScreen::CreateScores();
+SpawnScreen::CreateMapInfo();
+Interface::CreateRank();
+
+// ---------------------------------- //
+// Create the scores table
+declare Text BgImage = "file://Media/Manialinks/ShootMania/Common/topsBg.dds";
+ScoresTable::Load();
+ScoresTable::SetColumnsWidth(2., 2., 3., 15., 2., 2., 0., 0., 0., 4., 5.);
+ScoresTable::SetTableFormat(2, 6);
+ScoresTable::SetTableBackgroundImage(BgImage, <0.05, 56.>, <207., 178.>);
+ScoresTable::Build();
+
+//Spawns
+_SpawnList.clear();
+InitSpawns();
+
+Score::MatchBegin();
+
+SM::SetupDefaultVisibility();
+
+// ---------------------------------- //
+// Init bases
+foreach (Base in MapBases) {
+	Base.Clan = 0;
+	Base.IsActive = True;
+}
+
+InitPole();
+
+_Turn = 0;
+
+sleep(500);
+
+// ---------------------------------- //
+// Init scores
+MB_Sleep(1); ///< Allow the scores array to be sorted
+UIManager.UIAll.UISequence = CUIConfig::EUISequence::Playing;
+Message::SendBigMessage(TextLib::Compose(_("New match")), 2000, 0, CUIConfig::EUISound::EndRound, 0);
+PlaySound("prepare", 0);
+
+sleep(3000);
+
 if(C_Bots){
-	Users_SetNbFakeUsers(4, 4);
+	Users_SetNbFakeUsers(2, 3);
 } else {
 	Users_SetNbFakeUsers(0, 0);
 }
-if(G_Phase == 0)
-{
-	if(ClansNbPlayers[1] >= 1 && ClansNbPlayers[2] >= 1)
-	{
-		Message::SendBigMessage(TextLib::Compose(_("Enough players. Starting game...")), 5000, 0, CUIConfig::EUISound::StartMatch, 0);
-		foreach(Player, Players)
-		{
-			UnspawnPlayer(Player);
-		}
-		PlaySound("prepare", -1);
-		sleep(5000);
-		G_Phase = 1;
-	}
-	else
-	{
-		foreach(Player, Players)
-		{
-			if(Player.SpawnStatus == CSmPlayer::ESpawnStatus::NotSpawned && !Player.RequestsSpectate)
-			{
-				SetPlayerClan(Player, Player.RequestedClan);
-				SM::SpawnPlayer(Player, Player.CurrentClan, G_Spawns[MathLib::Rand(0, 1)]);
-				Message::SendBigMessage(TextLib::Compose(_("Waiting - Warmup")), 10000, 0, CUIConfig::EUISound::PhaseChange, 0);
-				Message::SendStatusMessage(TextLib::Compose(_("Game will automatically start if there is one player in each team or more.")), 10000, 0);
-			}		
-			if(Player.RequestedClan != Player.CurrentClan)
-			{
-				UnspawnPlayer(Player);
-			}
-		}
+
+StartTime = Now;
+EndTime = -1;
+
+
+_GamePhase = "checking";
+***
+
+// ---------------------------------- //
+// Play loop
+// ---------------------------------- //
+***PlayLoop***
+***
+ShowScoreLimit();
+TimerCooldown();
+Message::Loop();
+
+/**********************************************************************************
+* Checking *
+**********************************************************************************/
+
+if(_GamePhase == "checking"){
+	EndTime = -1;
+	if(Players.count == 0){
+		sleep(1000);
+		declare Msg = TextLib::Compose(_("No players"));
+		Message::SendBigMessage(Msg, 1000, 3, CUIConfig::EUISound::Silence, 0);
+		Message::SendStatusMessage(TextLib::Compose(_("FreezeTag GameMode - Lethan")), 6000, 0);
+	} else {
+		_GamePhase = "newRound";
 	}
 }
-if(G_Phase == 1)
-{
-	foreach(Player, Players)
-	{
-		UnspawnPlayer(Player);
-		Message::SendBigMessage(TextLib::Compose(_("New match")), 2000, 0, CUIConfig::EUISound::EndRound, 0);
-	}
+
+/**********************************************************************************
+* Main Game *
+**********************************************************************************/
+
+if(_GamePhase == "newRound"){
+	UIManager.UIAll.ScoreTableVisibility = CUIConfig::EVisibility::Normal;
+	Score::RoundBegin();
+	
+	PrepareSpawns();
+	
+	PlaySound("newRoundIn", -1);
+	
+	declare Msg = "";
+	
+	Msg = TextLib::Compose(_("New round"));
+	Message::SendBigMessage(Msg, 2000, 3, CUIConfig::EUISound::PhaseChange, 0);
+	Message::SendStatusMessage(TextLib::Compose(_("Main objective : Disarm opponents by touching them twice.")), 6000, 0);
+
 	sleep(2000);
-	G_Phase = 2;
-}
-if(G_Phase == 2)
-{
-	CheckIfTeamsAreBalanced();
 
-	PrepareRound();
-
-	G_Phase = 3;
-}
-if(G_Phase == 3)
-{
-	if(!G_OffZoneIsActivated)
-	{
-		//Count disarmed players
-		G_Clan1NbDisarm = 0;
-		G_Clan2NbDisarm = 0;
-		
-		foreach(Player, Players)
-		{
-			if(Player.Armor == 100 && Player.CurrentClan == 1)
-			{
-				G_Clan1NbDisarm += 1;
+	_PlayersRespawnOne.clear();
+	_PlayersRespawnTwo.clear();
+	foreach (Player in Players) {
+		if (Player.SpawnStatus == CSmPlayer::ESpawnStatus::NotSpawned && !Player.RequestsSpectate) {
+			if(Player.RequestedClan != 0){
+				SetPlayerClan(Player, Player.RequestedClan);
 			}
-			if(Player.Armor == 100 && Player.CurrentClan == 2)
-			{
-				G_Clan2NbDisarm += 1;
-			}
+			FSpawnPlayer(Player);
 		}
 	}
-	//Events control
-	foreach(Event, PendingEvents)
-	{
-		switch(Event.Type)
-		{
+
+	StartTime = Now;
+	if (S_TimeLimit > 0) EndTime = StartTime + (S_TimeLimit * 1000) + 2500;
+	else EndTime = -1;
+	
+	sleep(1000);
+	PlaySound("play", 0);
+	
+	
+	Msg = TextLib::Compose(_("3"));
+	Message::SendBigMessage(Msg, 2000, 3, CUIConfig::EUISound::Silence, 0);
+	
+	sleep(500);
+	
+	Msg = TextLib::Compose(_("2"));
+	Message::SendBigMessage(Msg, 2000, 3, CUIConfig::EUISound::Silence, 0);
+	
+	sleep(500);
+	
+	Msg = TextLib::Compose(_("1"));
+	Message::SendBigMessage(Msg, 2000, 3, CUIConfig::EUISound::Silence, 0);
+	
+	sleep(500);
+		
+	Msg = TextLib::Compose(_("Play !"));
+	Message::SendBigMessage(Msg, 2000, 3, CUIConfig::EUISound::Silence, 0);
+	_GamePhase = "mainGame";
+}
+
+/**********************************************************************************
+* Main Game *
+**********************************************************************************/
+
+if(_GamePhase == "mainGame"){
+	ShowLayerTeams(True);
+	ShowDisarmedTeamates(True);
+	
+	/********************/
+	//Count disarmed players
+	/********************/
+	_Clan1NbDisarm = 0;
+	_Clan2NbDisarm = 0;
+		
+	foreach(Player, AllPlayers){
+		if(Player.Armor == 0 && Player.CurrentClan == 1){
+			_Clan1NbDisarm += 1;
+		}
+		if(Player.Armor == 0 && Player.CurrentClan == 2){
+			_Clan2NbDisarm += 1;
+		}
+	}
+
+	/********************/
+	//Handling Events
+	/********************/
+	foreach(Event, PendingEvents){
+		switch(Event.Type){
 			case CSmModeEvent::EType::OnHit:
 			{
-				if(Event.Shooter.CurrentClan == Event.Victim.CurrentClan)
-				{
+				if(Event.Shooter.CurrentClan == Event.Victim.CurrentClan){
 					Discard(Event);
-				}
-				else
-				{
-					if(Event.Victim.Armor == 100)
-					{
+				} else {
+					if(Event.Victim.Armor == 0){
 						Discard(Event);
-					}
-					else
-					{
+					} else {
 						Event.Damage = 100;
-						Event.Shooter.Score.Points += 1;
+						Score::AddPoints(Event.Shooter, 1);
 						declare UI <=> UIManager.GetUI(Event.Shooter);
 						// Send message
 						UI.SendNotice(TextLib::Compose(_("+1 point !")), CUIConfig::ENoticeLevel::Default, Null, CUIConfig::EAvatarVariant::Default, CUIConfig::EUISound::Silence, 0);
-						if(Event.Victim.Armor == 200)
-						{						
-							foreach(Player, Players)
-							{
-								if(Player.CurrentClan == Event.Victim.CurrentClan)
-								{
-									if(!G_OffZoneIsActivated)
-									{
-										if(Player.Name == Event.Victim.Name)
-										{
-											Message::SendBigMessage(Player, TextLib::Compose(_("You are disarmed !")), 10000, 0, CUIConfig::EUISound::ScoreProgress, 0);
-											Message::SendStatusMessage(Player, TextLib::Compose(_("A teammate can free you by touching you physically.")), 10000, 5);
-										}
-										else
-										{
-											Message::SendStatusMessage(Player, TextLib::Compose(_("$f00%1$z$f00$s has been disarmed by $z%2 !"), Event.Victim.Name, Event.Shooter.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 0);
-											Message::SendBigMessage(Event.Shooter, TextLib::Compose(_("You disarmed %1."), Event.Victim.Name), 2000, 0);
-										}
+						if(Event.Victim.Armor == 100){
+							Event.Victim.SpeedPower = 0.1;
+							Event.Victim.AmmoGain = 0.0;
+							Event.Victim.StaminaGain = 0.0;
+							
+							Message::SendBigMessage(Event.Victim, TextLib::Compose(_("You are disarmed !")), 10000, 0, CUIConfig::EUISound::ScoreProgress, 0);
+							Message::SendStatusMessage(Event.Victim, TextLib::Compose(_("A teammate can free you by touching you physically.")), 10000, 5);
+							
+							//Say info to other users				
+							foreach(Player, Players){
+								if(Player.CurrentClan == Event.Victim.CurrentClan){ //If player is in victim clan
+									if(Player.Name != Event.Victim.Name){ //If player is the victim
+										Message::SendStatusMessage(Player, TextLib::Compose(_("$f00%1$z$f00$s has been disarmed by $z%2 !"), Event.Victim.Name, Event.Shooter.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 0);
 									}
-									else
-									{
-										Message::SendStatusMessage(Player, TextLib::Compose(_("$f00%1$z$f00$s is eliminated !"), Event.Victim.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 0);
-									}
-								}
-								else
-								{
-									if(!G_OffZoneIsActivated)
-									{
-										Message::SendStatusMessage(Player, TextLib::Compose(_("$0f0%1$z$0f0$s has been disarmed by $z%2 !"), Event.Victim.Name, Event.Shooter.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 2);
-										Message::SendBigMessage(Event.Shooter, TextLib::Compose(_("You disarmed %1."), Event.Victim.Name), 2000, 0);
-									}
-									else
-									{
-										Message::SendStatusMessage(Player, TextLib::Compose(_("$0f0%1$z$0f0$s is eliminated !"), Event.Victim.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 2);
-									}
+								} else { //If player is not in the victim clan
+									Message::SendStatusMessage(Player, TextLib::Compose(_("$0f0%1$z$0f0$s has been disarmed by $z%2 !"), Event.Victim.Name, Event.Shooter.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 2);
 								}
 							}
+							Message::SendBigMessage(Event.Shooter, TextLib::Compose(_("You disarmed %1."), Event.Victim.Name), 2000, 0);
+							ChangePlayerState(Event.Victim, False);
 						}
 						PassOn(Event);							
 					}
-				}					
+				}
 			}
 			case CSmModeEvent::EType::OnArmorEmpty:
 			{
-				if(Event.Victim.IsInOffZone)
-                {
-					if(!G_OffZoneIsActivated)
-					{
-						foreach(OtherPlayer, Players)
-						{
-							if(OtherPlayer.CurrentClan == Event.Victim.CurrentClan)
-							{
-								Message::SendBigMessage(OtherPlayer, TextLib::Compose(_("Penalty !")), 3000, 0, CUIConfig::EUISound::EndMatch, 0);
-								Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("A teammate felt into OffZone. Your team got a penalty !")), 3000, 0);
-							}
-						}
-						if(Event.Victim.CurrentClan == 1) {
-							G_Clan1Penalty += 1;
-						}
-						if(Event.Victim.CurrentClan == 2) {
-							G_Clan2Penalty += 1;
-						}
-					}
+				if(!Event.Victim.IsInOffZone){
+					Discard(Event);
+				} else {
 					PassOn(Event);
 				}
-		        else
-		        {
-                	PassOn(Event);
-                }
-			}
-		}
-	}
-
-	/**********************************/
-	//Direct Elimination - Storm
-	/**********************************/
-	if (EndTime < Now)
-	{
-		if(!G_OffZoneIsActivated)
-		{
-			UIManager.UIAll.CountdownEndTime = -1;
-			OffZoneRadius = C_OffZoneRadiusMax;
-			OffZoneRadiusSpeed = (C_OffZoneRadiusMax - C_OffZoneRadiusMin) / MathLib::ToReal(C_OffZoneDuration);
-			G_OffZoneIsActivated = True;
-			Message::SendBigMessage("Direct elimination", 6000, 3, CUIConfig::EUISound::EndRound, 0);
-			Message::SendStatusMessage(TextLib::Compose(_("Disarmed players eliminated ! Last man standing !")), 6000, 0);
-			EndTime = -1;
-		}
-		else
-		{
-			if (OffZoneRadiusSpeed > 0. && OffZoneRadius <= C_OffZoneRadiusMin)
-			{
-				OffZoneRadiusSpeed = 0.;
-				OffZoneRadius = C_OffZoneRadiusMin;
 			}
 		}
 	}
 	
-	ShowLayerTeams();	
-		
-	//Players control
-	foreach(Player in Players)
-	{
-		/**********************************/
-		// Unspawn players disarmed if storm is activated
-		/**********************************/
-		if(Player.Armor == 100 && G_OffZoneIsActivated)
-		{
-			UnspawnPlayer(Player);
-		}
-
-		/**********************************/
-		// Liberate players disarmed 
-		/**********************************/
-		if(!G_OffZoneIsActivated)
-		{
-			if(Player.CurrentClan == 1 && Player.Armor > 100 && Player.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned)
-			{
-				declare CSmPlayer[] NearPlayers = PlayersNearPlayer(Player, 1);
+	/********************/
+	//Liberate disarmed players
+	/********************/
+	foreach(Player, Players){
+		if(Player.CurrentClan == 1 && Player.Armor > 0 && Player.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned){
+			declare CSmPlayer[] NearPlayers = PlayersNearPlayer(Player, 1);
 							
-				foreach(NearPlayer in NearPlayers)
-				{
-					if (NearPlayer.CurrentClan == 1 && NearPlayer.Armor == 100 && NearPlayer.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned)
-					{
-						Player.Score.Points += 2;
-						// Send message
-						declare UI <=> UIManager.GetUI(Player);
-						UI.SendNotice(TextLib::Compose(_("+2 points !")), CUIConfig::ENoticeLevel::Default, Null, CUIConfig::EAvatarVariant::Default, CUIConfig::EUISound::Silence, 0);
-						Message::SendBigMessage(Player, TextLib::Compose(_("You freed %1 for 2 points."), NearPlayer.Name), 2000, 0);
-						Message::SendBigMessage(NearPlayer, TextLib::Compose(_("Freedom !")), 3000, 0);
-						UnspawnPlayer(NearPlayer);
-						foreach(OtherPlayer, Players)
-						{
-							if(OtherPlayer.CurrentClan == NearPlayer.CurrentClan)
-							{
-								Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("$s$0f0%1$z$0f0$s is back on the battlefield thanks to $z%2 $z$0f0!"), NearPlayer.Name, Player.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 2);
-							}
-							else
-							{
-								Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("$s$f00%1$z$f00$s is back on the battlefield thanks to $z%2 $z$f00!"), NearPlayer.Name, Player.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 0);
-							}
-						}
-					}
-				}
-			}
-			if(Player.CurrentClan == 2 && Player.Armor > 100 && Player.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned)
-			{
-				declare CSmPlayer[] NearPlayers = PlayersNearPlayer(Player, 2);
-							
-				foreach(NearPlayer in NearPlayers)
-				{
-					if (NearPlayer.CurrentClan == 2 && NearPlayer.Armor == 100 && NearPlayer.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned)
-					{
-						Player.Score.Points += 2;
-						// Send message
-						declare UI <=> UIManager.GetUI(Player);
-						UI.SendNotice(TextLib::Compose(_("+2 points !")), CUIConfig::ENoticeLevel::Default, Null, CUIConfig::EAvatarVariant::Default, CUIConfig::EUISound::Silence, 0);
-						Message::SendBigMessage(Player, TextLib::Compose(_("You freed %1 for 2 points."), NearPlayer.Name), 2000, 0);
-						Message::SendBigMessage(NearPlayer, TextLib::Compose(_("Freedom !")), 3000, 0);
-						UnspawnPlayer(NearPlayer);
-						foreach(OtherPlayer, Players)
-						{
-							if(OtherPlayer.CurrentClan == NearPlayer.CurrentClan)
-							{
-								Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("$s$0f0%1$z$0f0$s is back on the battlefield thanks to $z%2 $z$0f0!"), NearPlayer.Name, Player.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 2);
-							}
-							else
-							{
-								Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("$s$f00%1$z$f00$s is back on the battlefield thanks to $z%2 $z$f00!"), NearPlayer.Name, Player.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 0);
-							}
+			foreach(NearPlayer in NearPlayers){
+				if (NearPlayer.CurrentClan == 1 && NearPlayer.Armor == 0 && NearPlayer.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned){
+					Score::AddPoints(Player, 2);
+					// Send message
+					declare UI <=> UIManager.GetUI(Player);
+					UI.SendNotice(TextLib::Compose(_("+2 points !")), CUIConfig::ENoticeLevel::Default, Null, CUIConfig::EAvatarVariant::Default, CUIConfig::EUISound::Silence, 0);
+					Message::SendBigMessage(Player, TextLib::Compose(_("You freed %1 for 2 points."), NearPlayer.Name), 2000, 0);
+					Message::SendBigMessage(NearPlayer, TextLib::Compose(_("Freedom !")), 3000, 0);
+					_PlayersRespawnOne.add(NearPlayer);
+					UnspawnPlayer(NearPlayer);
+					
+					
+					foreach(OtherPlayer, Players){
+						if(OtherPlayer.CurrentClan == NearPlayer.CurrentClan){
+							Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("$s$0f0%1$z$0f0$s is back on the battlefield thanks to $z%2 $z$0f0!"), NearPlayer.Name, Player.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 2);
+						} else {
+							Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("$s$f00%1$z$f00$s is back on the battlefield thanks to $z%2 $z$f00!"), NearPlayer.Name, Player.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 0);
 						}
 					}
 				}
 			}
 		}
-		
-		/**********************************/
-		//Spawn players
-		/**********************************/
-		
-		if (Player.SpawnStatus == CSmPlayer::ESpawnStatus::NotSpawned && !Player.RequestsSpectate && Player.CurrentClan != 0 && !G_OffZoneIsActivated)
-		{
-			//Bots
-			if(Player.Driver != Null)
-			{
-				Player.Driver.Behaviour = CSmPlayerDriver::ESmDriverBehaviour::Saunter;
-				Player.Driver.AttackFilter		= CSmPlayerDriver::ESmAttackFilter::OppositePlayers;
-				Player.Driver.ShootPeriodMin 	= 1000;
-				Player.Driver.ShootPeriodMax 	= 2000;
-				Player.Driver.Accuracy 			= 1.0;
-				Player.Driver.Agressivity = 10.;
-				Player.Driver.ReactionTime		= 1000;
-				Player.Driver.Saunter_Radius		= 100.0;
-				Player.Driver.RocketAnticipation	= False;
-				Player.Driver.DisengageDistance 	= 100.;
-				Player.Driver.AggroRadius 		= 200.;					
-			}
-			//Update clan for bots
-			SetPlayerClan(Player, Player.RequestedClan);
-			
-			//Spawn
-			Player.Armor = 300;
-			Player.ArmorMax = 300;
-			Player.SpeedPower = 1.0;
-			Player.AmmoGain = 1.0;
-			Player.StaminaGain = 1.0;
-			
-			declare Integer SpawnId;
-			
-			if(Player.RequestedClan == 1)
-			{
-				if(G_Turn == 0)
-				{
-					SpawnId = 0;
-				}
-				if(G_Turn == 1)
-				{
-					SpawnId = 1;
-				}
-			}
-			if(Player.RequestedClan == 2)
-			{
-				if(G_Turn == 0)
-				{
-					SpawnId = 1;
-				}
-				if(G_Turn == 1)
-				{
-					SpawnId = 0;
-				}		
-			}
-			
-			SM::SpawnPlayer(Player, Player.CurrentClan, G_Spawns[SpawnId]);
-		}
-		
-		/**********************************/
-		//Show disarmed teammates
-		/**********************************/
-		if(!G_OffZoneIsActivated && !Player.RequestsSpectate) {
-			declare UI <=> UIManager.GetUI(Player);
-			UI.Hud3dMarkers = "";
-			declare DisabledPlayers = "";
-			foreach(OtherPlayer, Players)
-			{
-				if(OtherPlayer.Armor == 100 && OtherPlayer.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned && Player.Id != OtherPlayer.Id)
-				{
-					if(Player.CurrentClan == OtherPlayer.CurrentClan)
-					{
-						DisabledPlayers ^= """<marker label="$w$s$f00Disarmed teammate" playerlogin="{{{OtherPlayer.Login}}}" />""";
-					}
-					if(Player.CurrentClan != OtherPlayer.CurrentClan)
-					{
-						DisabledPlayers ^= """<marker label="$w$s$0f0Disarmed opponent" playerlogin="{{{OtherPlayer.Login}}}" />""";
+		if(Player.CurrentClan == 2 && Player.Armor > 0 && Player.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned){
+			declare CSmPlayer[] NearPlayers = PlayersNearPlayer(Player, 2);
+								
+			foreach(NearPlayer in NearPlayers){
+				if (NearPlayer.CurrentClan == 2 && NearPlayer.Armor == 0 && NearPlayer.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned){
+					Score::AddPoints(Player, 2);
+					// Send message
+					declare UI <=> UIManager.GetUI(Player);
+					UI.SendNotice(TextLib::Compose(_("+2 points !")), CUIConfig::ENoticeLevel::Default, Null, CUIConfig::EAvatarVariant::Default, CUIConfig::EUISound::Silence, 0);
+					Message::SendBigMessage(Player, TextLib::Compose(_("You freed %1 for 2 points."), NearPlayer.Name), 2000, 0);
+					Message::SendBigMessage(NearPlayer, TextLib::Compose(_("Freedom !")), 3000, 0);
+					_PlayersRespawnTwo.add(NearPlayer);
+					UnspawnPlayer(NearPlayer);
+					foreach(OtherPlayer, Players){
+						if(OtherPlayer.CurrentClan == NearPlayer.CurrentClan){
+							Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("$s$0f0%1$z$0f0$s is back on the battlefield thanks to $z%2 $z$0f0!"), NearPlayer.Name, Player.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 2);
+						} else {
+							Message::SendStatusMessage(OtherPlayer, TextLib::Compose(_("$s$f00%1$z$f00$s is back on the battlefield thanks to $z%2 $z$f00!"), NearPlayer.Name, Player.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 0);
+						}
 					}
 				}
 			}
-			UI.Hud3dMarkers = DisabledPlayers;
-		}
-		else {
-			declare UI <=> UIManager.GetUI(Player);
-			UI.Hud3dMarkers = "";
-			declare CenterMarker = "";
-			foreach(OtherPlayer, Players)
-			{
-				foreach(Goal, BlockPoles)
-				{
-					if(Goal.Tag == "Checkpoint"){
-						CenterMarker = """<marker icon="PointA" pos="{{{Goal.Position.X}}} {{{Goal.Position.Y + 2}}} {{{Goal.Position.Z}}}" />""";
-					}
-				}
-			}
-			UI.Hud3dMarkers = CenterMarker;
-		}
-		
-		/**********************************/
-		//Countdown sequence custom sounds
-		/**********************************/
-		if((EndTime - Now) == 15000)
-		{
-			PlaySound("lastsecondsave", -1);
-			Message::SendBigMessage(Player, TextLib::Compose(_("Time is running out !")), 5000, 5, CUIConfig::EUISound::EndRound, 0);
-				Message::SendStatusMessage(Player, TextLib::Compose(_("All disarmed players will be eliminated ! Try to save your disarmed teammates !")), 5000, 5);
-		}
-		if((EndTime - Now) == 10000)
-		{
-			PlaySound("cd", 10);
-		}
-		if((EndTime - Now) == 9000)
-		{
-			PlaySound("cd", 9);
-		}
-		if((EndTime - Now) == 8000)
-		{
-			PlaySound("cd", 8);
-		}
-		if((EndTime - Now) == 7000)
-		{
-			PlaySound("cd", 7);
-		}
-		if((EndTime - Now) == 6000)
-		{
-			PlaySound("cd", 6);
-		}
-		if((EndTime - Now) == 5000)
-		{
-			PlaySound("cd", 5);
-		}
-		if((EndTime - Now) == 4000)
-		{
-			PlaySound("cd", 4);
-		}
-		if((EndTime - Now) == 3000)
-		{
-			PlaySound("cd", 3);
-		}
-		if((EndTime - Now) == 2000)
-		{
-			PlaySound("cd", 2);
-		}
-		if((EndTime - Now) == 1000)
-		{
-			PlaySound("cd", 1);
 		}
 	}
 	
-	/**********************/
-	/* Victory conditions */
-	/**********************/
+	/********************/
+	//Respawn players
+	/********************/
+	foreach(Player, _PlayersRespawnOne){
+		if(Players.exists(Player)){
+			if(Player.SpawnStatus == CSmPlayer::ESpawnStatus::NotSpawned){
+				FSpawnPlayer(Player);
+			} else {
+				declare deleted = _PlayersRespawnOne.remove(Player);
+			}
+		} else {
+			declare deleted = _PlayersRespawnOne.remove(Player);
+		}
+	}
 	
-	if((G_OffZoneIsActivated && (ClansNbPlayersAlive[1] == 0 || ClansNbPlayersAlive[2] == 0)) || StartTime + 1000 < Now && !G_OffZoneIsActivated && (ClansNbPlayers[1] == G_Clan1NbDisarm + G_Clan1Penalty|| ClansNbPlayers[2] == G_Clan2NbDisarm + G_Clan2Penalty))
-	{
+	foreach(Player, _PlayersRespawnTwo){
+		if(Players.exists(Player)){
+			if(Player.SpawnStatus == CSmPlayer::ESpawnStatus::NotSpawned){
+				FSpawnPlayer(Player);
+			} else {
+				declare deleted = _PlayersRespawnTwo.remove(Player);
+			}
+		} else {
+			declare deleted = _PlayersRespawnTwo.remove(Player);
+		}
+	}
+	
+	/********************/
+	//Overtime -> Switch to Last Man Standing
+	/********************/
+	if(Now > EndTime){	
+		OffZoneRadius = C_OffZoneRadiusMax;
+	
+		declare Msg = TextLib::Compose(_("Last man standing !"));
+		Message::SendBigMessage(Msg, 4000, 3, CUIConfig::EUISound::EndRound, 0);
+		Message::SendStatusMessage(TextLib::Compose(_("All disarmed players are eliminated !")), 4000, 0);
+		ShowDisarmedTeamates(False);
+
+		EndTime = -1;
+		
+		_GamePhase = "lastManStanding";
+	}
+	
+	/*******************/
+	//Victory conditions
+	/*******************/
+	if((_Clan1NbDisarm == ClansNbPlayersAlive[1] && _PlayersRespawnOne.count == 0) || (_Clan2NbDisarm == ClansNbPlayersAlive[2] && _PlayersRespawnTwo.count == 0)){
 		OffZoneRadius = -1.;
 		OffZoneRadiusSpeed = 0.;
-		G_OffZoneIsActivated = False;
 		EndTime = 0;		
+				
+		Message::SendBigMessage(_("Game over !"), 3000, 10, CUIConfig::EUISound::VictoryPoint, 0);
+		
+		if(_Clan1NbDisarm == ClansNbPlayersAlive[1]){
+			_LastWinnerClan = 2;
+		} else {
+			_LastWinnerClan = 1;
+		}
+		
+		_GamePhase = "endRound";
+	}
+}
+
+/**********************************************************************************
+* Last Man Standing Game *
+**********************************************************************************/
+
+if(_GamePhase == "lastManStanding"){
+	ShowLayerTeams(True);
+	ShowDisarmedTeamates(False);
+	
+	foreach(Event, PendingEvents){
+		switch(Event.Type){
+			case CSmModeEvent::EType::OnHit:
+			{
+				if(Event.Shooter.CurrentClan == Event.Victim.CurrentClan){
+					Discard(Event);
+				} else {
+					Score::AddPoints(Event.Shooter, 1);
+					if(Event.Victim.Armor == 100){	
+						foreach(Player, Players){
+							if(Player.CurrentClan == Event.Victim.CurrentClan){
+								Message::SendStatusMessage(Player, TextLib::Compose(_("%1$z$f00$s is eliminated !"), Event.Victim.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 0);
+							} else {
+								Message::SendStatusMessage(Player, TextLib::Compose(_("%1$z$0f0$s is eliminated !"), Event.Victim.Name), 4000, 0, CUIConfig::EUISound::ScoreProgress, 2);
+							}
+						}
+					}
+					PassOn(Event);							
+				}
+			}
+		}
+	}
+
+	foreach(Player, Players){
+		if(Player.Armor == 0){
+			UnspawnPlayer(Player);
+		}
+	}
+	
+	if(OffZoneRadius > C_OffZoneRadiusMin){
+		OffZoneRadiusSpeed = (C_OffZoneRadiusMax - C_OffZoneRadiusMin) / MathLib::ToReal(C_OffZoneDuration);
+	} else {
+		OffZoneRadius = C_OffZoneRadiusMin;
+		OffZoneRadiusSpeed = 0.;
+	}
+	
+	if(ClansNbPlayersAlive[1] == 0 || ClansNbPlayersAlive[2] == 0){
+		OffZoneRadius = -1.;
+		OffZoneRadiusSpeed = 0.;
+		EndTime = 0;		
+		
+		
 		
 		Message::SendBigMessage(_("Game over !"), 3000, 10, CUIConfig::EUISound::VictoryPoint, 0);
 		
-		G_Phase = 4;
+		if(ClansNbPlayersAlive[1] == 0){
+			_LastWinnerClan = 2;
+		} else {
+			_LastWinnerClan = 1;
+		}
+	
+		_GamePhase = "endRound";
 	}
 }
-if(G_Phase == 4)
-{
-	Message::CleanStatusMessages();
-	sleep(3000);
+
+/**********************************************************************************
+* Last Man Standing Game *
+**********************************************************************************/
+
+if(_GamePhase == "endRound"){
 	
-	//Players control
-	foreach(Player in Players)
-	{
-		declare UI <=> UIManager.GetUI(Player);
-		UI.Hud3dMarkers = "";
-	}
-	if((ClansNbPlayers[1] <= G_Clan1NbDisarm + G_Clan1Penalty || ClansNbPlayers[2] <= G_Clan2NbDisarm + G_Clan2Penalty) || (ClansNbPlayersAlive[1] <= 0 || ClansNbPlayersAlive[2] <= 0))
-	{
-		if(ClansNbPlayers[1] == G_Clan1NbDisarm + G_Clan1Penalty|| ClansNbPlayersAlive[1] == 0)
-		{
-			Message::SendBigMessage("$f00Red team $gwin the round !", 5000, 10, CUIConfig::EUISound::EndRound, 0);
-			Clan2Score += 1;
-		}
-		if(ClansNbPlayers[2] == G_Clan2NbDisarm + G_Clan2Penalty|| ClansNbPlayersAlive[2] == 0)
-		{
-			Message::SendBigMessage("$00fBlue team $gwin the round !", 5000, 10, CUIConfig::EUISound::EndRound, 0);
-			Clan1Score += 1;
-		}
-		Message::SendStatusMessage(TextLib::Compose(_("$00fBlue Team $fffScore : %1 - $f00Red Team $fffScore : %2"), TextLib::ToText(Clan1Score), TextLib::ToText(Clan2Score)), 5000, 10);
-	}
-	else
-	{
-		Message::SendBigMessage("No winner team this round", 5000, 10, CUIConfig::EUISound::EndRound, 0);
-	}
-	G_Clan1NbDisarm = 0;
-	G_Clan2NbDisarm = 0;
-	UIManager.UIAll.ScoreTableVisibility = CUIConfig::EVisibility::ForcedVisible;
-	foreach(Player, Players)
-	{
+	ShowLayerTeams(False);
+	ShowDisarmedTeamates(False);
+	
+	
+	
+	sleep(2000);
+	foreach(Player, Players){
 		UnspawnPlayer(Player);
 	}
-	sleep(6000);
-	UIManager.UIAll.ScoreTableVisibility = CUIConfig::EVisibility::Normal;
+	sleep(2000);
 	
-	G_Phase = 2;
-}
-//Checking victory conditions
-if((Clan1Score >= S_ScoreLimit && Clan1Score - Clan2Score >= 2 || Clan2Score >= S_ScoreLimit && Clan2Score - Clan1Score >= 2) || (Clan1Score >= S_MaxScoreLimit || Clan2Score >= S_MaxScoreLimit)){
-	Message::CleanBigMessages();
-	Message::CleanStatusMessages();
-	if(Clan1Score > Clan2Score)
-	{
-		Message::SendBigMessage("$00fBlue team $gwin the match !", 3000, 15, CUIConfig::EUISound::EndMatch, 0);
-		foreach(Player, Players)
-		{
-			declare CUIConfig UI;
-			UI <=> UIManager.GetUI(Player);
-			
-			if(Player.CurrentClan == 1)
-			{
-				UI.ManialinkPage = """//{{{Now}}}
-					<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/wonmatch.ogg"/>""";
-			}
-			if(Player.CurrentClan == 2)
-			{
-				UI.ManialinkPage = """//{{{Now}}}
-					<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/lostmatch.ogg"/>""";
-			}
-		}
+	UIManager.UIAll.ScoreTableVisibility = CUIConfig::EVisibility::ForcedVisible;
+	if(_LastWinnerClan == 1){
+		ClanScores[1] += 1;
+		Message::SendBigMessage(_("$00fBlue Team$fff wins the round !"), 3000, 10, CUIConfig::EUISound::EndRound, 0);
+	} else {
+		ClanScores[2] += 1;
+		Message::SendBigMessage(_("$f00Red Team$fff wins the round !"), 3000, 10, CUIConfig::EUISound::EndRound, 0);
 	}
-	else
-	{
-		Message::SendBigMessage("$f00Red team $gwin the match !", 3000, 15, CUIConfig::EUISound::EndMatch, 0);
-		foreach(Player, Players)
-		{
-			declare CUIConfig UI;
-			UI <=> UIManager.GetUI(Player);
-			
-			if(Player.CurrentClan == 2)
-			{
-				UI.ManialinkPage = """//{{{Now}}}
-					<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/wonmatch.ogg"/>""";
-			}
-			if(Player.CurrentClan == 1)
-			{
-				UI.ManialinkPage = """//{{{Now}}}
-					<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/lostmatch.ogg"/>""";
-			}
-		}
+	
+	Message::SendStatusMessage(TextLib::Compose(_("$00fBlue Team $fffScore : %1 - $f00Red Team $fffScore : %2"), TextLib::ToText(ClanScores[1]), TextLib::ToText(ClanScores[2])), 3000, 0);
+		
+	sleep(5000);
+	Score::RoundEnd();
+		
+	//Change turn
+	if(_Turn == 0){
+		_Turn = 1;
+	} else {
+		_Turn = 0;
 	}
-	MatchEndRequested = True;
+	
+	//Checking victory conditions
+	if((ClanScores[1] >= S_ScoreLimit && ClanScores[1] - ClanScores[2] >= 2 || ClanScores[2] >= S_ScoreLimit && ClanScores[2] - ClanScores[1] >= 2) || (ClanScores[1] >= S_MaxScoreLimit || ClanScores[2] >= S_MaxScoreLimit)){
+		Message::CleanBigMessages();
+		Message::CleanStatusMessages();
+		UIManager.UIAll.ScoreTableVisibility = CUIConfig::EVisibility::Normal;
+		if(ClanScores[1] > ClanScores[2])	{
+			Message::SendBigMessage("$00fBlue team $gwins the match !", 3000, 15, CUIConfig::EUISound::EndMatch, 0);
+		} else{
+			Message::SendBigMessage("$f00Red team $gwins the match !", 3000, 15, CUIConfig::EUISound::EndMatch, 0);
+		}
+		PlaySound("nextMap", 0);
+		sleep(8000);
+		MatchEndRequested = True;
+	} else {
+		_GamePhase = "checking";
+	}
 }
+***
+
+// ---------------------------------- //
+// Map end
+// ---------------------------------- //
+***EndMap***
+***
+Message::CleanBigMessages();
+Message::CleanStatusMessages();
+EndTime = -1;
+Score::MatchEnd(True);
+UIManager.UILayerDestroyAll();
 ***
 
 // ---------------------------------- //
 // Server end
 // ---------------------------------- //
-***EndMap***
+***EndServer***
 ***
 UIManager.UILayerDestroyAll();
-ScoresTable::Unload();
 Interface::DestroyRank();
 SpawnScreen::DestroyRules();
 SpawnScreen::DestroyScores();
 SpawnScreen::DestroyMapInfo();
-sleep(3000);
 ***
-
-Void CheckIfTeamsAreBalanced()
-{
-	EndTime = -1;
-	foreach(Player, Players)
-	{
-		SetPlayerClan(Player, Player.RequestedClan);
-		Player.SpeedPower = 1.0;
-		Player.AmmoGain = 1.0;
-		Player.StaminaGain = 1.0;
-	}
-	
-	if(ClansNbPlayers[1] < 1 || ClansNbPlayers[2] < 1)
-	{
-		while(ClansNbPlayers[1] < 1 || ClansNbPlayers[2] < 1)
-		{
-			foreach(Player, Players)
-			{
-				if(Player.SpawnStatus == CSmPlayer::ESpawnStatus::NotSpawned && !Player.RequestsSpectate)
-				{
-					SetPlayerClan(Player, Player.RequestedClan);
-					SM::SpawnPlayer(Player, Player.CurrentClan, G_Spawns[MathLib::Rand(0, 1)]);
-					Message::SendBigMessage(TextLib::Compose(_("Pause - Not enough players")), 10000, 0, CUIConfig::EUISound::PhaseChange, 0);
-					Message::SendStatusMessage(TextLib::Compose(_("Game will automatically resume if there is one player in each team or more.")), 10000, 0);
-				}
-				if(Player.RequestedClan != Player.CurrentClan)
-				{
-					UnspawnPlayer(Player);
-				}
-			}
-			if(C_Bots){
-				Users_SetNbFakeUsers(2, 2);
-			} else {
-				Users_SetNbFakeUsers(0, 0);
-			}
-			yield;
-		}
-		foreach(Player, Players)
-		{
-			UnspawnPlayer(Player);
-		}
-		Message::SendBigMessage(TextLib::Compose(_("Problem solved !")), 3000, 0, CUIConfig::EUISound::EndRound, 0);
-		Message::SendStatusMessage(TextLib::Compose(_("Loading...")), 3000, 0);
-	}
-	if(MathLib::Abs(ClansNbPlayers[1] - ClansNbPlayers[2]) > 1) {
-		while(MathLib::Abs(ClansNbPlayers[1] - ClansNbPlayers[2]) > 1) {
-			foreach(Player, Players)
-			{
-				if(Player.SpawnStatus == CSmPlayer::ESpawnStatus::NotSpawned && !Player.RequestsSpectate)
-				{
-					SetPlayerClan(Player, Player.RequestedClan);
-					SM::SpawnPlayer(Player, Player.CurrentClan, G_Spawns[MathLib::Rand(0, 1)]);
-					Message::SendBigMessage(TextLib::Compose(_("Pause - Unbalanced teams")), 10000, 0, CUIConfig::EUISound::PhaseChange, 0);
-					Message::SendStatusMessage(TextLib::Compose(_("Game will automatically resume if teams are balanced.")), 10000, 0);
-				}		
-				if(Player.RequestedClan != Player.CurrentClan)
-				{
-					UnspawnPlayer(Player);
-				}
-			}
-			if(C_Bots){
-				Users_SetNbFakeUsers(2, 2);
-			} else {
-				Users_SetNbFakeUsers(0, 0);
-			}
-			yield;
-		}
-		foreach(Player, Players)
-		{
-			UnspawnPlayer(Player);
-		}
-		Message::SendBigMessage(TextLib::Compose(_("Problem solved !")), 3000, 0, CUIConfig::EUISound::EndRound, 0);
-		Message::SendStatusMessage(TextLib::Compose(_("Loading...")), 3000, 0);
-	}
-}
-
-Void LoadSpawns()
-{
-	foreach(Spawn in BlockSpawns)
-	{
-		if(Spawn.Tag == "Spawn")
-		{
-			G_Spawns.add(Spawn);
-		}
-	}
-}
-
-Void InitPole()
-{
-	foreach (BlockPole in BlockPoles)
-	{
-		if (BlockPole.Tag == "Checkpoint")
-		{
-			OffZoneCenterBlockId = BlockPole.Id;
-			break;
-		}
-	}
-}
-
-Void SetWeapon()
-{
-	foreach(Player, Players)
-	{
-		SetPlayerWeapon(Player, CSmMode::EWeapon::Rocket, False);
-	}
-}
-
-Real Distance ( Vec3 vec1, Vec3 vec2 )
-{
-	return MathLib::Sqrt( (vec1.X - vec2.X) * (vec1.X - vec2.X) + (vec1.Y - vec2.Y) * (vec1.Y - vec2.Y) + (vec1.Z - vec2.Z) * (vec1.Z - vec2.Z));
-}
-
-CSmPlayer[] PlayersNearPlayer(CSmPlayer Player, Integer ClanNum)
-{
-	declare CSmPlayer[] RetPlayers;
-	
-	foreach(XPlayer in Players)
-	{
-		if ( Distance (XPlayer.Position, Player.Position) <= C_NearDistance && XPlayer != Player && XPlayer.CurrentClan == ClanNum)
-		{
-			RetPlayers.add(XPlayer);
-		}
-	}
-	
-	return RetPlayers;
-}
-
-Void PrepareMap() {
-	---Rules---	
-	foreach (Base in Bases) {
-		Base.IsActive = True;
-		Base.Clan = 0;
-	}
-	
-	SpawnScreen::CreateScores();
-	SpawnScreen::CreateMapInfo();
-	Interface::CreateRank();
-	
-	
-	declare Text BgImage = "file://Media/Manialinks/ShootMania/Common/topsBg.dds";
-	ScoresTable::Load();
-	ScoresTable::SetColumnsWidth(2., 2., 3., 15., 2., 2., 0., 0., 0., 4., 5.);
-	ScoresTable::SetTableFormat(2, 6);
-	ScoresTable::SetTableBackgroundImage(BgImage, <0.05, 56.>, <207., 178.>);
-	ScoresTable::Build();
-	
-	Score::MatchBegin();
-	Score::RoundBegin();
-	
-	SM::SetupDefaultVisibility();
-	
-	Mode::LoadMap();	
-	
-	MatchEndRequested = False;
-	
-	LoadSpawns();
-	InitPole();
-	G_PlayersList.clear();
-		
-	Message::SendBigMessage("Loading...", 2000, 3, CUIConfig::EUISound::StartMatch, 0);
-	
-	
-	
-	//Create Score Limit layer
-	ScoreLimit = UIManager.UILayerCreate();
-	UIManager.UIAll.UILayers.add(ScoreLimit);
-	
-	ScoreLimit.ManialinkPage = """
-	""";
-	
-	//Create Layer Teams
-	LayerTeams = UIManager.UILayerCreate();
-	UIManager.UIAll.UILayers.add(LayerTeams);
-	
-	LayerTeams.ManialinkPage = """
-	""";
-	
-	
-	//Custom sounds
-	CustomSounds = UIManager.UILayerCreate();
-	UIManager.UIAll.UILayers.add(CustomSounds);
-	
-	CustomSounds.ManialinkPage = """
-	""";
-	
-	UIManager.UIAll.UISequence = CUIConfig::EUISequence::Playing;
-	sleep(5000);
-	
-	StartTime = Now;
-	EndTime = -1;
-
-	G_Turn = 0;
-}
-Void PrepareRound() {
-	sleep(2000);
-	PlayerManialinkLines.clear();
-	LatestUITickScoreLimit = Now;
-	LatestUITickLayerTeams = Now + 100;
-	
-	StartTime = Now;
-	EndTime = StartTime + S_TimeLimit * 1000;
-	
-	Message::SendBigMessage(TextLib::Compose(_("New round")), 4000, 0, CUIConfig::EUISound::StartRound, 0);
-	Message::SendStatusMessage(TextLib::Compose(_("Main objective : Disarm opponents by touching them twice.")), 8000, 0);
-	
-	SetWeapon();
-	
-	G_Clan1NbDisarm = 0;
-	G_Clan2NbDisarm = 0;
-	
-	G_Clan1Penalty = 0; 
-	G_Clan2Penalty = 0;
-	
-	if(G_Turn == 0){
-		G_Turn = 1;
-		G_Spawns[0].Base.Clan = 2;
-		G_Spawns[1].Base.Clan = 1;
-	}
-	else {
-		G_Turn = 0;
-		G_Spawns[0].Base.Clan = 1;
-		G_Spawns[1].Base.Clan = 2;
-	}
-	
-	
-	
-	foreach(Player, Players)
-	{
-		if(Player.RequestedClan != 0)
-		{
-			SetPlayerClan(Player, Player.RequestedClan);
-		}
-	}
-}
 
 Void ChangePlayerState(CSmPlayer Player, Boolean IsFree){
 	if(Player.CurrentClan==0) return;
 	if(IsFree){
-		PlayerManialinkLines[Player.Id] = """<player login="{{{Player.Login}}}"/>""";
+		_PlayerManialinkLines[Player.Id] = """<player login="{{{Player.Login}}}"/>""";
 	}else{
-		PlayerManialinkLines[Player.Id] = """<player isalive="false" nickname="{{{TextLib::MLEncode(Player.Name)}}}"/>""";
+		_PlayerManialinkLines[Player.Id] = """<player isalive="false" nickname="{{{TextLib::MLEncode(Player.Name)}}}"/>""";
 	}
 
 	Player.IsHighlighted = IsFree;
 }
 
-Void ShowLayerTeams() {
-	if(Now > LatestUITickLayerTeams + UITickPeriod)
-	{
-		LatestUITickLayerTeams = Now;
-		LayerTeams.ManialinkPage = "";
-		/* Numbers, penalties and score */
-		if(!G_OffZoneIsActivated)
-		{
-			LayerTeams.ManialinkPage = """
-				<frame posn="-140 70 0">
-					<label posn="0 0 1" halign="center" style="TextButtonBig" text="{{{_("$00f$sMembers left")}}} :$fff {{{ ClansNbPlayers[1] - (G_Clan1NbDisarm)}}}" />
-				</frame>
-				<frame posn="140 70 0">
-					<label posn="0 0 1" halign="center" style="TextButtonBig" text="{{{_("$f00$sMembers left")}}} :$fff {{{ ClansNbPlayers[2] - (G_Clan2NbDisarm) }}}" />
-				</frame>
-				<frame posn="-45 78 0">
-					<label posn="0 0 1" halign="center" style="TextButtonNav" text="{{{_("$00f$sBlue Team $fffpenalties")}}} : {{{ G_Clan1Penalty }}}" />
-				</frame>
-				<frame posn="45 78 0">
-					<label posn="0 0 1" halign="center" style="TextButtonNav" text="{{{_("$f00$sRed Team $fffpenalties")}}} : {{{ G_Clan2Penalty }}}" />
-				</frame>
-				<frame posn="-45 74 0">
-					<label posn="0 0 1" halign="center" style="TextButtonNav" text="{{{_("$00f$sBlue Team $fffScore")}}} : {{{ Clan1Score }}}" />
-				</frame>
-				<frame posn="45 74 0">
-					<label posn="0 0 1" halign="center" style="TextButtonNav" text="{{{_("$f00$sRed Team $fffScore")}}} : {{{ Clan2Score }}}" />
-				</frame>
-			
-				""";
-		}
-		else
-		{
-			LayerTeams.ManialinkPage = """
-				<frame posn="-140 70 0">
-					<label posn="0 0 1" halign="center" style="TextButtonBig" text="{{{_("$00f$sMembers left")}}} :$fff {{{ ClansNbPlayersAlive[1]}}}" />
-				</frame>
-				<frame posn="140 70 0">
-					<label posn="0 0 1" halign="center" style="TextButtonBig" text="{{{_("$f00$sMembers left")}}} :$fff {{{ ClansNbPlayersAlive[2]}}}" />
-				</frame>
-				<frame posn="-45 78 0">
-					<label posn="0 0 1" halign="center" style="TextButtonNav" text="{{{_("$00f$sBlue Team $fffScore")}}} : {{{ Clan1Score }}}" />
-				</frame>
-				<frame posn="45 78 0">
-					<label posn="0 0 1" halign="center" style="TextButtonNav" text="{{{_("$f00$sRed Team $fffScore")}}} : {{{ Clan2Score }}}" />
-				</frame>
-			
-				""";
-		}
-		declare Integer[Integer] NumberOfLines = [1=>0, 2=>0];
-		declare Text[Integer] TextOfPlayers = [1=>"", 2=>""];
-		foreach (Player in Players) {
-			if(Player.CurrentClan==0) continue;
-	
-			if(NumberOfLines[Player.CurrentClan]<10 && PlayerManialinkLines.existskey(Player.Id)) {
-				TextOfPlayers[Player.CurrentClan] ^= PlayerManialinkLines[Player.Id];
-				NumberOfLines[Player.CurrentClan] += 1;
-			}
-		}
-		LayerTeams.ManialinkPage ^= """<playerlist posn="-160 67" halign="left"  style="" substyle="Small" lines="10" columns="1" static="true">{{{TextOfPlayers[1]}}}</playerlist><playerlist posn="160 67" halign="right" style="" substyle="Small" lines="10" columns="1" static="true">{{{TextOfPlayers[2]}}}</playerlist>""";
+Void InitPole(){
+	foreach(BlockPole in MapLandmarks_Gauge){
+		if(BlockPole.Tag == "Checkpoint"){
+			OffZoneCenterLandmarkId = BlockPole.Id;
+		}		
 	}
 }
 
-Void CheckPlayersStatus() {
-	//Check player status inround
-	foreach(Player, Players)
+Void FSpawnPlayer(CSmPlayer _Player){
+	ChangePlayerState(_Player, True);
+	
+	//Bots
+	if(_Player.Driver != Null){
+		_Player.Driver.Behaviour = CSmPlayerDriver::ESmDriverBehaviour::Saunter;
+		_Player.Driver.AttackFilter		= CSmPlayerDriver::ESmAttackFilter::OppositePlayers;
+		_Player.Driver.ShootPeriodMin 	= 1000;
+		_Player.Driver.ShootPeriodMax 	= 2000;
+		_Player.Driver.Accuracy 			= 1.0;
+		_Player.Driver.Agressivity = 10.;
+		_Player.Driver.ReactionTime		= 1000;
+		_Player.Driver.Saunter_Radius		= 100.0;
+		_Player.Driver.RocketAnticipation	= False;
+		_Player.Driver.DisengageDistance 	= 100.;
+		_Player.Driver.AggroRadius 		= 200.;					
+	}
+	
+	_Player.Armor = 200;
+	_Player.ArmorMax = 200;
+	_Player.SpeedPower = 1.0;
+	_Player.AmmoGain = 1.0;
+	_Player.StaminaGain = 1.0;
+	if(_Turn == 0){
+		if(_Player.CurrentClan == 1){
+			SM::SpawnPlayer(_Player, _Player.CurrentClan, MapLandmarks_PlayerSpawn[_SpawnList[1]].PlayerSpawn, Now);
+		}
+		if(_Player.CurrentClan == 2){
+			SM::SpawnPlayer(_Player, _Player.CurrentClan, MapLandmarks_PlayerSpawn[_SpawnList[0]].PlayerSpawn, Now);
+		}
+	}
+	if(_Turn == 1){
+		if(_Player.CurrentClan == 2){
+			SM::SpawnPlayer(_Player, _Player.CurrentClan, MapLandmarks_PlayerSpawn[_SpawnList[1]].PlayerSpawn, Now);
+		}
+		if(_Player.CurrentClan == 1){
+			SM::SpawnPlayer(_Player, _Player.CurrentClan, MapLandmarks_PlayerSpawn[_SpawnList[0]].PlayerSpawn, Now);
+		}
+	}
+}
+
+Void InitSpawns(){
+	foreach (MapLandmark in MapLandmarks_PlayerSpawn){
+		_SpawnList.add(MapLandmark.Id);
+	}	
+}
+
+Void PrepareSpawns(){
+	if(_Turn == 0){
+		MapLandmarks_PlayerSpawn[_SpawnList[0]].Base.Clan = 2;
+		MapLandmarks_PlayerSpawn[_SpawnList[1]].Base.Clan = 1;
+	} else {
+		MapLandmarks_PlayerSpawn[_SpawnList[0]].Base.Clan = 1;
+		MapLandmarks_PlayerSpawn[_SpawnList[1]].Base.Clan = 2;
+	}
+}
+
+Void PlaySound(Text soundName, Integer variant){
+	_SoundLayerFirst.ManialinkPage = """""";
+	if(soundName == "cd"){
+		_SoundLayerFirst.ManialinkPage = """<manialink version="2">
+		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/Sounds/cd{{{variant}}}.ogg"/>
+		</manialink>""";
+	}
+	if(soundName == "lastSeconds"){
+		_SoundLayerFirst.ManialinkPage = """<manialink version="2">
+		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/Sounds/lastSeconds.ogg"/>
+		</manialink>""";
+	}
+	if(soundName == "play"){
+		_SoundLayerFirst.ManialinkPage = """<manialink version="2">
+		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/Sounds/321Play.ogg"/>
+		</manialink>""";
+	}
+	if(soundName == "prepare"){
+		_SoundLayerFirst.ManialinkPage = """<manialink version="2">
+		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/Sounds/prepare.ogg"/>
+		</manialink>""";
+	}
+	if(soundName == "lost"){
+		_SoundLayerFirst.ManialinkPage = """<manialink version="2">
+		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/Sounds/lost.ogg"/>        </manialink>""";
+	}
+	if(soundName == "win"){
+		_SoundLayerFirst.ManialinkPage = """<manialink version="2">
+		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/Sounds/win.ogg"/>        </manialink>""";
+	}
+	if(soundName == "newRoundIn"){
+		_SoundLayerFirst.ManialinkPage = """<manialink version="2">
+		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/Sounds/newRound.ogg"/>        </manialink>""";
+	}
+	if(soundName == "nextMap"){
+		_SoundLayerFirst.ManialinkPage = """<manialink version="2">
+		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/Sounds/playstationOut.ogg"/>        </manialink>""";
+	}
+}
+
+Void TimerCooldown(){
+	if((EndTime - Now) == 17000)
 	{
-		if(Player.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned)
-		{
-			if(Player.Armor >= 200)
-			{
-				Player.SpeedPower = 1.;
-				Player.AmmoGain = 1.8;
-				Player.StaminaGain = 1.;
-				ChangePlayerState(Player, True);
+		PlaySound("lastSeconds", -1);
+		Message::SendBigMessage(TextLib::Compose(_("Time is running out !")), 5000, 5, CUIConfig::EUISound::EndRound, 0);
+		Message::SendStatusMessage(TextLib::Compose(_("All disarmed players will be eliminated ! Try to save your disarmed teammates !")), 5000, 5);
+	}
+	if((EndTime - Now) == 10000)
+	{
+		PlaySound("cd", 10);
+	}
+	if((EndTime - Now) == 9000)
+	{
+		PlaySound("cd", 9);
+	}
+	if((EndTime - Now) == 8000)
+	{
+		PlaySound("cd", 8);
+	}
+	if((EndTime - Now) == 7000)
+	{
+		PlaySound("cd", 7);
+	}
+	if((EndTime - Now) == 6000)
+	{
+		PlaySound("cd", 6);
+	}
+	if((EndTime - Now) == 5000)
+	{
+		PlaySound("cd", 5);
+	}
+	if((EndTime - Now) == 4000)
+	{
+		PlaySound("cd", 4);
+	}
+	if((EndTime - Now) == 3000)
+	{
+		PlaySound("cd", 3);
+	}
+	if((EndTime - Now) == 2000)
+	{
+		PlaySound("cd", 2);
+	}
+	if((EndTime - Now) == 1000)
+	{
+		PlaySound("cd", 1);
+	}
+}
+
+Void ShowLayerTeams(Boolean show) {
+	if(show){
+		if(Now > _LatestUITickLayerTeams + UITickPeriod){
+			_LatestUITickLayerTeams = Now;
+			_LayerTeams.ManialinkPage = """
+					<frame posn="-140 70 0">
+						<label posn="0 0 1" halign="center" style="TextButtonBig" text="{{{_("$00f$sMembers left")}}} :$fff {{{ ClansNbPlayersAlive[1]}}}" />
+					</frame>
+					<frame posn="140 70 0">
+						<label posn="0 0 1" halign="center" style="TextButtonBig" text="{{{_("$f00$sMembers left")}}} :$fff {{{ ClansNbPlayersAlive[2]}}}" />
+					</frame>
+					<frame posn="-45 78 0">
+						<label posn="0 0 1" halign="center" style="TextButtonNav" text="{{{_("$00f$sBlue Team $fffScore")}}} : {{{ ClanScores[1] }}}" />
+					</frame>
+					<frame posn="45 78 0">
+						<label posn="0 0 1" halign="center" style="TextButtonNav" text="{{{_("$f00$sRed Team $fffScore")}}} : {{{ ClanScores[2] }}}" />
+					</frame>
+				
+					""";
+			declare Integer[Integer] NumberOfLines = [1=>0, 2=>0];
+			declare Text[Integer] TextOfPlayers = [1=>"", 2=>""];
+			foreach (Player in Players) {
+				if(Player.CurrentClan != 0){
+					if(NumberOfLines[Player.CurrentClan] < 10 && _PlayerManialinkLines.existskey(Player.Id)) {
+						TextOfPlayers[Player.CurrentClan] ^= _PlayerManialinkLines[Player.Id];
+						NumberOfLines[Player.CurrentClan] += 1;
+					}
+				}
 			}
-			else
-			{
-				SetPlayerAmmo(Player, CSmMode::EWeapon::Rocket, 0);			
-				Player.SpeedPower = 0.1;
-				Player.AmmoGain = 0.0;
-				Player.StaminaGain = 0.0;
-				ChangePlayerState(Player, False);
-			}
+		_LayerTeams.ManialinkPage ^= """<playerlist posn="-160 67" halign="left"  style="" substyle="Small" lines="10" columns="1" static="true">{{{TextOfPlayers[1]}}}</playerlist><playerlist posn="160 67" halign="right" style="" substyle="Small" lines="10" columns="1" static="true">{{{TextOfPlayers[2]}}}</playerlist>""";
+		}		
+	} else {
+		if(_LayerTeams.ManialinkPage != ""){
+			_LayerTeams.ManialinkPage = "";
 		}
 	}
 }
 
 Void ShowScoreLimit(){
-	if(Now > LatestUITickScoreLimit + UITickPeriod)
+	if(Now > _LatestUITickScoreLimit + UITickPeriod)
 	{
-		//log("ScoreLimit");
-		LatestUITickScoreLimit = Now;
-		ScoreLimit.ManialinkPage = """""";
+		_LatestUITickScoreLimit = Now;
+		_ScoreLimitLayer.ManialinkPage = """""";
 		//Show score limit and score limit max
-		ScoreLimit.ManialinkPage = """
+		_ScoreLimitLayer.ManialinkPage = """
 		
 			<frame posn="158 -70 0">
 				<label posn="0 0 1" halign="right" style="TextButtonNav" text="{{{_("$sScore limit")}}} : {{{ S_ScoreLimit }}}" />
@@ -982,21 +829,49 @@ Void ShowScoreLimit(){
 	}
 }
 
-Void PlaySound(Text soundName, Integer variant){
-	CustomSounds.ManialinkPage = """""";
-	if(soundName == "cd"){
-		CustomSounds.ManialinkPage = """//{{{Now}}}
-		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/cd{{{variant}}}.ogg"/>
-		""";
+Void ShowDisarmedTeamates(Boolean show){
+	foreach(Player, Players){
+		if(!Player.RequestsSpectate) {
+			declare UI <=> UIManager.GetUI(Player);
+			UI.MarkersXML = "";
+			if(show){
+				declare DisabledPlayers = "";
+				foreach(OtherPlayer, Players)
+				{
+					if(OtherPlayer.Armor == 0 && OtherPlayer.SpawnStatus == CSmPlayer::ESpawnStatus::Spawned && Player.Id != OtherPlayer.Id)
+					{
+						if(Player.CurrentClan == OtherPlayer.CurrentClan)
+						{
+							DisabledPlayers ^= """<marker label="$w$s$f00Disarmed teammate" playerlogin="{{{OtherPlayer.Login}}}" />""";
+						}
+						if(Player.CurrentClan != OtherPlayer.CurrentClan)
+						{
+							DisabledPlayers ^= """<marker label="$w$s$0f0Disarmed opponent" playerlogin="{{{OtherPlayer.Login}}}" />""";
+						}
+					}
+				}
+				UI.MarkersXML = DisabledPlayers;
+			} 
+		}
 	}
-	if(soundName == "lastsecondsave"){
-		CustomSounds.ManialinkPage = """//{{{Now}}}
-		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/42719494/Maniaplanet/capture.ogg"/>
-		""";
+}
+
+//Return distance between 2 Vectors 3D
+Real Distance ( Vec3 vec1, Vec3 vec2 ){
+	return MathLib::Sqrt( (vec1.X - vec2.X) * (vec1.X - vec2.X) + (vec1.Y - vec2.Y) * (vec1.Y - vec2.Y) + (vec1.Z - vec2.Z) * (vec1.Z - vec2.Z));
+}
+
+//Return players near the player
+CSmPlayer[] PlayersNearPlayer(CSmPlayer Player, Integer ClanNum){
+	declare CSmPlayer[] RetPlayers;
+	
+	foreach(XPlayer in Players)
+	{
+		if ( Distance (XPlayer.Position, Player.Position) <= C_NearDistance && XPlayer != Player && XPlayer.CurrentClan == ClanNum)
+		{
+			RetPlayers.add(XPlayer);
+		}
 	}
-	if(soundName == "prepare"){
-		CustomSounds.ManialinkPage = """//{{{Now}}}
-		<audio looping="0" hidden="1" play="1" data="https://dl.dropboxusercontent.com/u/7750552/prepare.ogg"/>
-		""";
-	}
+	
+	return RetPlayers;
 }
