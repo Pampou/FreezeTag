@@ -35,7 +35,7 @@
 #Const C_OffZoneRadiusMin 15.
 #Const C_OffZoneDuration 20
 #Const C_NearDistance 1.5
-#Const C_Bots			True	// FOR TEST ONLY, THEY ARE DUMB
+#Const C_Bots False	// FOR TEST ONLY, THEY ARE DUMB
 #Const UITickPeriod 200
 
 // ---------------------------------- //
@@ -852,7 +852,17 @@ Void ShowDisarmedTeamates(Boolean show){
 					}
 				}
 				UI.MarkersXML = DisabledPlayers;
-			} 
+			} else {
+				declare CenterMarker = "";
+				foreach(OtherPlayer, Players){
+					foreach(Goal, MapLandmarks_Gauge){
+						if(Goal.Tag == "Checkpoint"){
+							CenterMarker = """<marker icon="PointA" pos="{{{Goal.Position.X}}} {{{Goal.Position.Y + 2}}} {{{Goal.Position.Z}}}" />""";
+						}
+					}
+				}
+				UI.MarkersXML = CenterMarker;
+			}
 		}
 	}
 }
