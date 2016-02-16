@@ -35,7 +35,7 @@
 #Const C_OffZoneRadiusMin 15.
 #Const C_OffZoneDuration 20
 #Const C_NearDistance 1.5
-#Const C_Bots			False	// FOR TEST ONLY, THEY ARE DUMB
+#Const C_Bots			True	// FOR TEST ONLY, THEY ARE DUMB
 #Const UITickPeriod 200
 
 // ---------------------------------- //
@@ -300,6 +300,7 @@ if(_GamePhase == "mainGame"){
 		switch(Event.Type){
 			case CSmModeEvent::EType::OnHit:
 			{
+				if(Event.Victim != Null){
 				if(Event.Shooter.CurrentClan == Event.Victim.CurrentClan){
 					Discard(Event);
 				} else {
@@ -334,7 +335,7 @@ if(_GamePhase == "mainGame"){
 						}
 						PassOn(Event);							
 					}
-				}
+				}}
 			}
 			case CSmModeEvent::EType::OnArmorEmpty:
 			{
