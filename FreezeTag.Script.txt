@@ -27,7 +27,7 @@
 
 #Setting S_TimeLimit	60 as _("Time limit")		///< Time limit on a map
 #Setting S_ScoreLimit	6	as _("Score limit")	///< Points limit on a map
-#Setting S_MaxScoreLimit	8	as _("Max Score limit")	///< Points limit on a map
+#Setting S_GameMode	0	as _("Game mode - 0 : Normal (Rocket), 1 : Oldschool (Laser), 2 : Vanilla")	///< Points limit on a map
 
 #Const Description _("TYPE: Free for all\nOBJECTIVE: Hit your opponents to score points. The first player to reach the points limit or the player with the highest score at the end of the time limit wins the map.")
 
@@ -44,6 +44,8 @@
 declare Ident[]	_SpawnList;		///< Id of all the landmarks with a player spawn of the map
 declare Integer _Turn;
 declare Integer _LastWinnerClan;
+declare Integer _ScoreLimit;
+declare Integer _GameMode;
 
 declare CUILayer _SoundLayerFirst;
 declare CUILayer _ScoreLimitLayer;
@@ -174,7 +176,7 @@ PlaySound("prepare", 0);
 sleep(3000);
 
 if(C_Bots){
-	Users_SetNbFakeUsers(2, 3);
+	Users_SetNbFakeUsers(3, 3);
 } else {
 	Users_SetNbFakeUsers(0, 0);
 }
@@ -198,8 +200,23 @@ Message::Loop();
 /**********************************************************************************
 * Checking *
 **********************************************************************************/
-
 if(_GamePhase == "checking"){
+	
+	declare clan1 = 0;
+	declare clan2 = 0;
+	
+	foreach(Player, Players){
+		if(Player.RequestedClan != 0){
+			SetPlayerClan(Player, Player.RequestedClan);
+			if(Player.CurrentClan == 1){
+				clan1 += 1;
+			}
+			if(Player.CurrentClan == 2){
+				clan2 += 1;
+			}
+		}
+	}
+	
 	EndTime = -1;
 	if(Players.count == 0){
 		sleep(1000);
@@ -207,7 +224,23 @@ if(_GamePhase == "checking"){
 		Message::SendBigMessage(Msg, 1000, 3, CUIConfig::EUISound::Silence, 0);
 		Message::SendStatusMessage(TextLib::Compose(_("FreezeTag GameMode - Lethan")), 6000, 0);
 	} else {
-		_GamePhase = "newRound";
+		if(clan1 < 2 && clan2 < 2){
+			sleep(1000);
+			declare Msg = TextLib::Compose(_("Waiting for more players"));
+			Message::SendBigMessage(Msg, 1000, 3, CUIConfig::EUISound::Silence, 0);
+			Message::SendStatusMessage(TextLib::Compose(_("2 players per team are required.")), 6000, 0);
+		} else {
+			if(MathLib::Abs(clan1 - clan2) > 1){
+				sleep(1000);
+				declare Msg = TextLib::Compose(_("Unbalanced Teams"));
+				Message::SendBigMessage(Msg, 1000, 3, CUIConfig::EUISound::Silence, 0);
+				Message::SendStatusMessage(TextLib::Compose(_("Game will resume/start if teams are balanced.")), 6000, 0);
+			} else {
+				_ScoreLimit = S_ScoreLimit;
+				_GameMode = S_GameMode;
+				_GamePhase = "newRound";
+			}
+		}
 	}
 }
 
@@ -235,9 +268,6 @@ if(_GamePhase == "newRound"){
 	_PlayersRespawnTwo.clear();
 	foreach (Player in Players) {
 		if (Player.SpawnStatus == CSmPlayer::ESpawnStatus::NotSpawned && !Player.RequestsSpectate) {
-			if(Player.RequestedClan != 0){
-				SetPlayerClan(Player, Player.RequestedClan);
-			}
 			FSpawnPlayer(Player);
 		}
 	}
@@ -312,11 +342,7 @@ if(_GamePhase == "mainGame"){
 						declare UI <=> UIManager.GetUI(Event.Shooter);
 						// Send message
 						UI.SendNotice(TextLib::Compose(_("+1 point !")), CUIConfig::ENoticeLevel::Default, Null, CUIConfig::EAvatarVariant::Default, CUIConfig::EUISound::Silence, 0);
-						if(Event.Victim.Armor == 100){
-							Event.Victim.SpeedPower = 0.1;
-							Event.Victim.AmmoGain = 0.0;
-							Event.Victim.StaminaGain = 0.0;
-							
+						if(Event.Victim.Armor == 100){							
 							Message::SendBigMessage(Event.Victim, TextLib::Compose(_("You are disarmed !")), 10000, 0, CUIConfig::EUISound::ScoreProgress, 0);
 							Message::SendStatusMessage(Event.Victim, TextLib::Compose(_("A teammate can free you by touching you physically.")), 10000, 5);
 							
@@ -341,6 +367,9 @@ if(_GamePhase == "mainGame"){
 			{
 				if(!Event.Victim.IsInOffZone){
 					Discard(Event);
+					Event.Victim.SpeedPower = 0.1;
+					Event.Victim.AmmoGain = 0.0;
+					Event.Victim.StaminaGain = 0.0;
 				} else {
 					PassOn(Event);
 				}
@@ -567,7 +596,8 @@ if(_GamePhase == "endRound"){
 	}
 	
 	//Checking victory conditions
-	if((ClanScores[1] >= S_ScoreLimit && ClanScores[1] - ClanScores[2] >= 2 || ClanScores[2] >= S_ScoreLimit && ClanScores[2] - ClanScores[1] >= 2) || (ClanScores[1] >= S_MaxScoreLimit || ClanScores[2] >= S_MaxScoreLimit)){
+	if(ClanScores[1] >= S_ScoreLimit || ClanScores[2] >= S_ScoreLimit){
+		ShowLayerTeams(False);
 		Message::CleanBigMessages();
 		Message::CleanStatusMessages();
 		UIManager.UIAll.ScoreTableVisibility = CUIConfig::EVisibility::Normal;
@@ -630,27 +660,23 @@ Void InitPole(){
 
 Void FSpawnPlayer(CSmPlayer _Player){
 	ChangePlayerState(_Player, True);
-	
-	//Bots
-	if(_Player.Driver != Null){
-		_Player.Driver.Behaviour = CSmPlayerDriver::ESmDriverBehaviour::Saunter;
-		_Player.Driver.AttackFilter		= CSmPlayerDriver::ESmAttackFilter::OppositePlayers;
-		_Player.Driver.ShootPeriodMin 	= 1000;
-		_Player.Driver.ShootPeriodMax 	= 2000;
-		_Player.Driver.Accuracy 			= 1.0;
-		_Player.Driver.Agressivity = 10.;
-		_Player.Driver.ReactionTime		= 1000;
-		_Player.Driver.Saunter_Radius		= 100.0;
-		_Player.Driver.RocketAnticipation	= False;
-		_Player.Driver.DisengageDistance 	= 100.;
-		_Player.Driver.AggroRadius 		= 200.;					
-	}
-	
+
 	_Player.Armor = 200;
 	_Player.ArmorMax = 200;
 	_Player.SpeedPower = 1.0;
 	_Player.AmmoGain = 1.0;
 	_Player.StaminaGain = 1.0;
+	
+	if(_GameMode == 0){
+		SetPlayerWeapon(_Player, CSmMode::EWeapon::Rocket, False);
+	}
+	if(_GameMode == 1){
+		SetPlayerWeapon(_Player, CSmMode::EWeapon::Laser, False);
+	}
+	if(_GameMode == 2){
+		SetPlayerWeapon(_Player, CSmMode::EWeapon::Rocket, True);
+	}
+	
 	if(_Turn == 0){
 		if(_Player.CurrentClan == 1){
 			SM::SpawnPlayer(_Player, _Player.CurrentClan, MapLandmarks_PlayerSpawn[_SpawnList[1]].PlayerSpawn, Now);
@@ -797,13 +823,13 @@ Void ShowLayerTeams(Boolean show) {
 			declare Text[Integer] TextOfPlayers = [1=>"", 2=>""];
 			foreach (Player in Players) {
 				if(Player.CurrentClan != 0){
-					if(NumberOfLines[Player.CurrentClan] < 10 && _PlayerManialinkLines.existskey(Player.Id)) {
+					if(NumberOfLines[Player.CurrentClan] < 20 && _PlayerManialinkLines.existskey(Player.Id)) {
 						TextOfPlayers[Player.CurrentClan] ^= _PlayerManialinkLines[Player.Id];
 						NumberOfLines[Player.CurrentClan] += 1;
 					}
 				}
 			}
-		_LayerTeams.ManialinkPage ^= """<playerlist posn="-160 67" halign="left"  style="" substyle="Small" lines="10" columns="1" static="true">{{{TextOfPlayers[1]}}}</playerlist><playerlist posn="160 67" halign="right" style="" substyle="Small" lines="10" columns="1" static="true">{{{TextOfPlayers[2]}}}</playerlist>""";
+		_LayerTeams.ManialinkPage ^= """<playerlist posn="-160 67" halign="left"  style="" substyle="Small" lines="20" columns="1" static="true">{{{TextOfPlayers[1]}}}</playerlist><playerlist posn="160 67" halign="right" style="" substyle="Small" lines="20" columns="1" static="true">{{{TextOfPlayers[2]}}}</playerlist>""";
 		}		
 	} else {
 		if(_LayerTeams.ManialinkPage != ""){
@@ -815,16 +841,26 @@ Void ShowLayerTeams(Boolean show) {
 Void ShowScoreLimit(){
 	if(Now > _LatestUITickScoreLimit + UITickPeriod)
 	{
+		declare Text gameMode = "";
+		switch(_GameMode){
+			case 0:
+				gameMode = "$00fNormal (Rocket)";
+			case 1:
+				gameMode = "$f00OldSchool (Laser)";
+			case 2:
+				gameMode = "$0f0Vanilla";
+		}
+		
 		_LatestUITickScoreLimit = Now;
 		_ScoreLimitLayer.ManialinkPage = """""";
 		//Show score limit and score limit max
 		_ScoreLimitLayer.ManialinkPage = """
-		
-			<frame posn="158 -70 0">
-				<label posn="0 0 1" halign="right" style="TextButtonNav" text="{{{_("$sScore limit")}}} : {{{ S_ScoreLimit }}}" />
-			</frame>
+			<label posn="-159 89 0" style="TextButtonNav" text="$sFreezeTag by Lethan, Idea from Versa"/>
 			<frame posn="158 -74 0">
-				<label posn="0 0 1" halign="right" style="TextButtonNav" text="{{{_("$sMax score limit")}}} : {{{ S_MaxScoreLimit }}}" />
+				<label posn="0 0 1" halign="right" style="TextButtonNav" text="{{{_("$sGame Mode")}}} : {{{ gameMode }}}" />
+			</frame>
+			<frame posn="158 -70 0">
+				<label posn="0 0 1" halign="right" style="TextButtonNav" text="{{{_("$sScore limit")}}} : {{{ _ScoreLimit }}}" />
 			</frame>
 			""";
 	}
